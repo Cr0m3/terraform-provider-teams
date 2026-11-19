@@ -279,7 +279,7 @@ func (r *groupPolicyAssignmentResource) waitForRemoval(ctx context.Context, grou
 		return err
 	}
 	if !removed {
-		return fmt.Errorf("Teams still reports an assignment for %s/%s after %d reads", groupID, policyType, cfg.Attempts)
+		return fmt.Errorf("teams still reports an assignment for %s/%s after %d reads", groupID, policyType, cfg.Attempts)
 	}
 	return nil
 }
