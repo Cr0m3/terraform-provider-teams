@@ -138,9 +138,9 @@ func TestGroupPolicyAssignment_FakeServiceLifecycle(t *testing.T) {
 
 	// Guard against a vacuous pass: reads must have been served stale (so the
 	// provider really polled), and every kind of write must have been sent.
-	staleReads, grants, unassigns := fake.counts()
-	if staleReads == 0 || grants < 5 || unassigns == 0 {
-		t.Errorf("the lifecycle did not exercise the service as intended: staleReads=%d grants=%d unassigns=%d", staleReads, grants, unassigns)
+	staleReads, grants, unassigns, patches := fake.counts()
+	if staleReads == 0 || grants < 5 || unassigns == 0 || patches != 0 {
+		t.Errorf("the lifecycle did not exercise the service as intended: staleReads=%d grants=%d unassigns=%d patches=%d", staleReads, grants, unassigns, patches)
 	}
 }
 
@@ -195,7 +195,7 @@ type fakeTeamsService struct {
 	lag     int
 	stale   int
 
-	staleReads, grants, unassigns int
+	staleReads, grants, unassigns, patches int
 }
 
 func newFakeTeamsService(lag int) *fakeTeamsService {
@@ -208,7 +208,7 @@ func (f *fakeTeamsService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"Endpoints":{"AdminServiceEndpoint":"admin.example"},"Headers":{}}`)
 	case r.Method == http.MethodGet && r.URL.Path == fakeAssignmentsPath:
 		f.serveList(w)
-	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, fakeAssignmentsPath):
+	case (r.Method == http.MethodPost || r.Method == http.MethodPatch) && strings.HasPrefix(r.URL.Path, fakeAssignmentsPath):
 		f.serveGrant(w, r)
 	default:
 		fakeError(w, http.StatusNotFound, "unexpected request "+r.Method+" "+r.URL.Path)
@@ -238,12 +238,12 @@ func (f *fakeTeamsService) serveList(w http.ResponseWriter) {
 	for _, policyType := range types {
 		for i, a := range source[policyType] {
 			rows = append(rows, map[string]any{
-				"GroupId":     a.group,
-				"PolicyType":  policyType,
-				"PolicyName":  "Tag:" + a.name,
-				"Rank":        i + 1,
-				"CreatedTime": "2026-01-01T00:00:00Z",
-				"CreatedBy":   "fake",
+				"groupId":     a.group,
+				"policyType":  policyType,
+				"policyName":  a.name,
+				"priority":    i + 1,
+				"createdTime": "2026-01-01T00:00:00Z",
+				"createdBy":   "fake",
 			})
 		}
 	}
@@ -264,17 +264,28 @@ func (f *fakeTeamsService) serveGrant(w http.ResponseWriter, r *http.Request) {
 		fakeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
-	rawName, ok := body["PolicyName"]
+	rawName, ok := body["policyName"]
 	if !ok {
-		fakeError(w, http.StatusBadRequest, "PolicyName is required")
+		fakeError(w, http.StatusBadRequest, "policyName is required")
 		return
 	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// POST grants create or replace assignments. PATCH is update-only; accepting
+	// it for an absent assignment previously hid the live API's create failure.
+	if r.Method == http.MethodPatch {
+		f.patches++
+		if !slices.ContainsFunc(f.live[policyType], func(a fakeAssignment) bool {
+			return strings.EqualFold(a.group, group)
+		}) {
+			fakeError(w, http.StatusNotFound, "Group does not have policy of that type assigned")
+			return
+		}
+	}
 	if string(rawName) == "null" {
 		if len(body) != 1 {
-			fakeError(w, http.StatusBadRequest, "an unassign carries only PolicyName")
+			fakeError(w, http.StatusBadRequest, "an unassign carries only policyName")
 			return
 		}
 		f.beginWrite()
@@ -285,12 +296,12 @@ func (f *fakeTeamsService) serveGrant(w http.ResponseWriter, r *http.Request) {
 	}
 	var name string
 	var rank int
-	rawRank, hasRank := body["Rank"]
+	rawRank, hasRank := body["priority"]
 	switch {
 	case json.Unmarshal(rawName, &name) != nil || name == "":
-		fakeError(w, http.StatusBadRequest, "PolicyName must be a non-empty string or null")
+		fakeError(w, http.StatusBadRequest, "policyName must be a non-empty string or null")
 	case len(body) != 2 || !hasRank || json.Unmarshal(rawRank, &rank) != nil || rank < 1:
-		fakeError(w, http.StatusBadRequest, "a grant carries PolicyName and a positive integer Rank")
+		fakeError(w, http.StatusBadRequest, "a grant carries policyName and a positive integer priority")
 	default:
 		f.beginWrite()
 		f.grants++
@@ -333,10 +344,10 @@ func (f *fakeTeamsService) external(group, policyType string, name *string, rank
 	f.set(group, policyType, name, rank)
 }
 
-func (f *fakeTeamsService) counts() (staleReads, grants, unassigns int) {
+func (f *fakeTeamsService) counts() (staleReads, grants, unassigns, patches int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.staleReads, f.grants, f.unassigns
+	return f.staleReads, f.grants, f.unassigns, f.patches
 }
 
 func (f *fakeTeamsService) order(policyType string) []string {

@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -259,16 +261,27 @@ func (r *groupPolicyAssignmentResource) Delete(ctx context.Context, req resource
 			return
 		}
 	}
-	_, _, err = resourcex.LoadUntil(ctx, groupPolicyConsistency, func(ctx context.Context) (*groupPolicyAssignment, bool, error) {
-		got, readErr := r.readAssignment(ctx, groupID, policyType)
-		if readErr != nil {
-			return nil, false, readErr
-		}
-		return got, got != nil, nil
-	}, func(got *groupPolicyAssignment) bool { return got == nil })
-	if err != nil {
+	if err := r.waitForRemoval(ctx, groupID, policyType, groupPolicyConsistency); err != nil {
 		resp.Diagnostics.AddError("waiting for the group policy assignment to be removed failed", err.Error())
 	}
+}
+
+// waitForRemoval polls until Teams no longer reports an assignment for the
+// group and policy type. The getter reports "done" once the assignment is gone,
+// so the loop stops on the first read that confirms removal, and a removal that
+// never becomes visible is an error instead of a silent success.
+func (r *groupPolicyAssignmentResource) waitForRemoval(ctx context.Context, groupID, policyType string, cfg consistency.Config) error {
+	_, removed, err := consistency.RetryUntil(ctx, cfg, func(ctx context.Context) (struct{}, bool, error) {
+		got, readErr := r.readAssignment(ctx, groupID, policyType)
+		return struct{}{}, readErr == nil && got == nil, readErr
+	}, nil)
+	if err != nil {
+		return err
+	}
+	if !removed {
+		return fmt.Errorf("Teams still reports an assignment for %s/%s after %d reads", groupID, policyType, cfg.Attempts)
+	}
+	return nil
 }
 
 func (r *groupPolicyAssignmentResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
@@ -291,30 +304,28 @@ func (r *groupPolicyAssignmentResource) ImportState(ctx context.Context, req res
 }
 
 func (r *groupPolicyAssignmentResource) grant(ctx context.Context, model groupPolicyAssignmentModel) error {
-	policyType := model.PolicyType.ValueString()
-	_, err := r.client.API.Invoke(ctx, teamsapi.Op{
-		CmdletName: "Grant-Cs" + policyType,
-		Transport:  teamsapi.ConfigAPI,
-		Kind:       teamsapi.PolicyGrant,
-		PolicyName: policyType,
-	}, map[string]any{
-		"Group":      model.GroupID.ValueString(),
-		"PolicyName": model.PolicyName.ValueString(),
-		"Rank":       model.Rank.ValueInt64(),
+	return r.grantGroupPolicy(ctx, model.GroupID.ValueString(), model.PolicyType.ValueString(), map[string]any{
+		"policyName": model.PolicyName.ValueString(),
+		"priority":   model.Rank.ValueInt64(),
 	})
-	return err
 }
 
 func (r *groupPolicyAssignmentResource) unassign(ctx context.Context, groupID, policyType string) error {
+	return r.grantGroupPolicy(ctx, groupID, policyType, map[string]any{"policyName": nil})
+}
+
+func (r *groupPolicyAssignmentResource) grantGroupPolicy(ctx context.Context, groupID, policyType string, payload map[string]any) error {
+	// MicrosoftTeams 7.9.0 uses POST for GroupGrantPolicyAssignment, including
+	// null-policy removal. go-teams v0.4.0's PolicyGrant uses PATCH, which only
+	// updates existing assignments and returns 404 when creating a new one.
 	_, err := r.client.API.Invoke(ctx, teamsapi.Op{
 		CmdletName: "Grant-Cs" + policyType,
 		Transport:  teamsapi.ConfigAPI,
-		Kind:       teamsapi.PolicyGrant,
+		Kind:       teamsapi.AutoRest,
 		PolicyName: policyType,
-	}, map[string]any{
-		"Group":      groupID,
-		"PolicyName": nil,
-	})
+		Method:     http.MethodPost,
+		Path:       "/Skype.Policy/groupPolicyAssignments/" + url.PathEscape(groupID) + "/policyTypes/" + url.PathEscape(policyType),
+	}, payload)
 	return err
 }
 
@@ -347,9 +358,14 @@ func decodeGroupPolicyAssignment(rows []map[string]any, groupID, policyType stri
 			continue
 		}
 		name := normalizeGroupPolicyName(stringField(row, "PolicyName", "policyName"))
-		rank, ok := int64Field(row, "Rank", "rank")
-		if name == "" || !ok || rank < 1 {
-			return nil, fmt.Errorf("group policy assignment response for %s/%s is missing a valid policy name or rank", groupID, policyType)
+		if name == "" {
+			return nil, fmt.Errorf("group policy assignment response for %s/%s is missing a valid policy name", groupID, policyType)
+		}
+		// The API calls Rank "priority" on both reads and writes; it is already
+		// one-based. Accept the legacy Rank field without overriding priority.
+		rank, ok := int64Field(row, "priority", "Rank")
+		if !ok || rank < 1 || rank > maxGroupPolicyRank {
+			return nil, fmt.Errorf("group policy assignment response for %s/%s is missing a valid priority (rank): expected an integer between 1 and %d", groupID, policyType, maxGroupPolicyRank)
 		}
 		if found != nil {
 			return nil, fmt.Errorf("group policy assignment response contained multiple assignments for %s/%s", groupID, policyType)
@@ -432,6 +448,8 @@ func rowField(row map[string]any, key string) any {
 func int64Field(row map[string]any, keys ...string) (int64, bool) {
 	for _, key := range keys {
 		switch value := rowField(row, key).(type) {
+		case nil:
+			continue
 		case int:
 			return int64(value), true
 		case int64:
@@ -441,6 +459,8 @@ func int64Field(row map[string]any, keys ...string) (int64, bool) {
 		case string:
 			parsed, err := strconv.ParseInt(value, 10, 64)
 			return parsed, err == nil
+		default:
+			return 0, false
 		}
 	}
 	return 0, false

@@ -44,6 +44,30 @@ resource "teams_tenant_federation_configuration" "global" {
 App-only needs the app's service principal to hold a **Teams admin directory role**
 (a `403` is a role gap, not a token problem).
 
+## Group policy assignments
+
+[`teams_group_policy_assignment`](docs/resources/group_policy_assignment.md)
+uses a **POST** group grant for create, update, and null-policy removal, matching
+the MicrosoftTeams module. PATCH is a separate update-only operation and returns
+404 when the group has no assignment of that type. The resource explicitly selects
+POST because the pinned `go-teams` v0.4.0 `PolicyGrant` transport selects PATCH.
+
+The Terraform `rank` maps directly to the API's **`priority`** field (one-based,
+with no offset). Grant requests send `{"policyName":"Name","priority":1}`; removal
+sends `{"policyName":null}`. Reads take the actual rank from `priority`, not from
+the configured value, so a rank normalized by Teams remains visible as drift.
+
+Run the tenant-free lifecycle regression with OpenTofu:
+
+```sh
+TF_ACC_TERRAFORM_PATH=tofu TF_ACC_PROVIDER_HOST=registry.opentofu.org \
+  go test -race -count=1 -run '^TestGroupPolicyAssignment_FakeServiceLifecycle$' -v ./internal/provider/
+```
+
+The fake service rejects PATCH for missing assignments and uses the live API's
+camel-case fields, including `priority`. This checks the provider lifecycle, not
+live Teams permissions or propagation behavior.
+
 ## Generation
 
 ```
