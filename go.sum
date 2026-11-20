@@ -163,8 +163,8 @@ github.com/terraprovider/go-msadmin v0.3.2 h1:cwUVgcbCeC4mn6z3Hia0Z0gLrDuIT+w8b+
 github.com/terraprovider/go-msadmin v0.3.2/go.mod h1:CkXa21tk46qthvZ+BB1p3PALlqH7ICCschVSXxS8ZAE=
 github.com/terraprovider/go-teams v0.4.0 h1:EGoa+H0O5S17BwIOK0eFT1oupe0cth3v30h7b7mHcIA=
 github.com/terraprovider/go-teams v0.4.0/go.mod h1:wrtgwmZ5f5KbmX2cfcIoUGgCUHyYH9afRUHdogZBz8w=
-github.com/terraprovider/tf-msadmin v0.8.0 h1:ouz71t3GgxlSaCwbNt4Lgwz22qXXagUWioUVF74UZ3Q=
-github.com/terraprovider/tf-msadmin v0.8.0/go.mod h1:jFe2E+aYB60ym6kvE8IZbr0FDa0RU9KLZRiiQhDgEBU=
+github.com/terraprovider/tf-msadmin v0.9.5 h1:qD72Y8/Ua7RElELgjR48VG/f7c4dyPL+9WXcDtof45c=
+github.com/terraprovider/tf-msadmin v0.9.5/go.mod h1:hdRdco4r2DkncEu4KT58W5U1toSqqUSwHpDwXPMY7dM=
 github.com/vmihailenco/msgpack v3.3.3+incompatible/go.mod h1:fy3FlTQTDXWkZ7Bh6AcGMlsjHatGryHQYUTf1ShIgkk=
 github.com/vmihailenco/msgpack v4.0.4+incompatible h1:dSLoQfGFAo3F6OoNhwUmLwVgaUXK79GlxNBwueZn0xI=
 github.com/vmihailenco/msgpack v4.0.4+incompatible/go.mod h1:fy3FlTQTDXWkZ7Bh6AcGMlsjHatGryHQYUTf1ShIgkk=
